@@ -1,11 +1,14 @@
 package edu.umass.adp;
 
 
+import org.deeplearning4j.nn.api.Layer;
+import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.dataset.api.DataSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.util.Arrays;
 import java.util.List;
 
 import org.datavec.api.records.reader.RecordReader;
@@ -21,7 +24,6 @@ import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
 import org.deeplearning4j.nn.weights.WeightInit;
 import org.deeplearning4j.optimize.listeners.ScoreIterationListener;
 import org.nd4j.linalg.activations.Activation;
-import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.cpu.nativecpu.NDArray;
 import org.nd4j.linalg.dataset.api.iterator.DataSetIterator;
 import org.nd4j.linalg.lossfunctions.LossFunctions;
@@ -33,88 +35,89 @@ public class SemanticFeatures {
     final static Logger logger = LoggerFactory.getLogger(SemanticFeatures.class);
 
     /**
-     * Test
+     * Util
      * @param args
      * @throws Exception
      */
     public static void main(String args[]) throws Exception{
-        new SemanticFeatures().generate("example.csv");
+        new SemanticFeatures().generate("example.csv", 6, 6);
     }
 
     /**
      * Generates semantic features
      * @throws Exception
      */
-    public int[][] generate(final String file) throws Exception {
-
-        int seed = 123; //TODO
-        //int numSamples = MnistDataFetcher.NUM_EXAMPLES;
-
-        int labelIndex = 6; // TODO (would depend on the length)
-        int numClasses = 6; // Number of classes
-        int batchSize = 15;
-        int iterations = 100;
-        int listenerFreq = iterations/2;
+    public String generate(final String file,  int labelIndex, int numRecords) throws Exception {
+        int seed = 1234;
+        int numClasses = 100; // Number of labels
+        int batchSize = numRecords;
+        int iterations = 1;
+        int listenerFreq = iterations/ 5;
 
         logger.info("Loading data....");
 
-        final DataSet dataset = readCSVDataset(file, batchSize, labelIndex, numClasses);
-
-        dataset.getFeatures();
-
-        logger.info("Building model....");
+        final DataSetIterator dataSetIterator = readCSVDataset(file, batchSize, labelIndex, numClasses);
 
         // a stack of RBMs
+
+        final int FEATURE_OUTPUT = 100;
+
+        // track time
+
+        long now = System.currentTimeMillis();
 
         final MultiLayerConfiguration conf = new NeuralNetConfiguration.Builder()
                 .seed(seed)
                 .iterations(iterations)
-                .activation(Activation.TANH)
+                .activation(Activation.SIGMOID)
                 .weightInit(WeightInit.XAVIER)
-                .learningRate(0.1)
+                .learningRate(0.01)
                 .regularization(true).l2(1e-4)
                 .list()
-                .layer(0, new RBM.Builder().nIn(6).nOut(3).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
+                .layer(0, new RBM.Builder().nIn(labelIndex).nOut(100).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
                         .build())
-                .layer(1, new RBM.Builder().nIn(3).nOut(3).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
+                .layer(1, new RBM.Builder().nIn(100).nOut(100).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
                         .build())
-                .layer(2, new OutputLayer.Builder(LossFunctions.LossFunction.KL_DIVERGENCE) // DON'T SET TO ELSE
-                        .activation(Activation.SOFTMAX)
-                        .nIn(3).nOut(6).build())
-                //.backprop(true).pretrain(false)
+                .layer(2, new RBM.Builder().nIn(100).nOut(100).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
+                        .build())
+                .layer(3, new RBM.Builder().nIn(100).nOut(100).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
+                        .build())
+                .layer(4, new RBM.Builder().nIn(100).nOut(100).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
+                        .build())
+                .layer(5, new RBM.Builder().nIn(100).nOut(100).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
+                        .build())
+                .layer(6, new RBM.Builder().nIn(100).nOut(100).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
+                        .build())
+                .layer(7, new RBM.Builder().nIn(100).nOut(labelIndex).lossFunction(LossFunctions.LossFunction.KL_DIVERGENCE)
+                        .build())
+                .layer(8, new OutputLayer.Builder(LossFunctions.LossFunction.MSE) // DON'T SET TO ELSE
+                        .activation(Activation.SIGMOID)
+                        .nIn(labelIndex).nOut(FEATURE_OUTPUT)
+                        .build())
                 .pretrain(true).backprop(true)
                 .build();
 
+
         final MultiLayerNetwork model = new MultiLayerNetwork(conf);
+        model.init();
         model.setListeners(new ScoreIterationListener(listenerFreq));
 
         logger.info("Training model....");
 
-        // logger.info("Num of examples:{}", dataset.numExamples());
-
-        model.fit(dataset);
-
-        double[][] data = { //TODO
-                {0, 0, 0, 0, 0, 0},
-                {1, 1, 1, 1, 1, 1},
-                {0, 0 ,0, 0, 0, 0},
-                {1, 1, 1, 1, 1, 1},
-
-        };
-
-        List<INDArray> feed = model.feedForward(); // maybe this it?
-
-        NDArray testDataset = new NDArray(data);
-        int[] prediction = model.predict(testDataset);
-
-        logger.info("Prediction:");
-
-        for (int i = 0; i < data.length; i++) {
-            System.out.println(prediction[i]);
+        while (dataSetIterator.hasNext()) {
+            final DataSet next = dataSetIterator.next();
+            model.fit(next);
         }
 
-        return null; //FIXME
+        long time = System.currentTimeMillis() - now;
 
+        logger.info("Trained in {} msec", time);
+
+        List<INDArray> feed = model.feedForwardToLayer(8, true);
+
+        logger.info("Layer names:{}", model.getLayerNames());
+
+        return feed.get(8).toString();
     }
 
     /**
@@ -128,15 +131,70 @@ public class SemanticFeatures {
      * @throws IOException
      * @throws InterruptedException
      */
-    private static org.nd4j.linalg.dataset.DataSet readCSVDataset(
+    private static DataSetIterator readCSVDataset(
             String csvFileClasspath, int batchSize, int labelIndex, int numClasses)
             throws IOException, InterruptedException{
 
-        logger.info("reading:{}", csvFileClasspath);
+        logger.info("reading:{} with label index:{}", csvFileClasspath, labelIndex);
 
         RecordReader rr = new CSVRecordReader();
         rr.initialize(new FileSplit(new File(csvFileClasspath)));
+        // logger.info("First record:{}", rr.nextRecord().getRecord().toString());
+        DataSetIterator iterator = new RecordReaderDataSetIterator(rr,batchSize,labelIndex,numClasses);
+        return iterator;
+
+    }
+
+
+    /**
+     * Can be used to get a record from a test dataset
+     * @param csvFileClasspath
+     * @param batchSize
+     * @param labelIndex
+     * @param numClasses
+     * @return
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    private static Double[] getRecordFromCSV(
+            String csvFileClasspath, int batchSize, int labelIndex, int numClasses)
+            throws IOException, InterruptedException{
+
+        RecordReader rr = new CSVRecordReader();
+        rr.initialize(new FileSplit(new File(csvFileClasspath)));
+        System.out.println(rr.nextRecord().getRecord().toString());
+
+        String[] d = rr.nextRecord().getRecord().toString().replace("[","").replace("]","").split(",");
+
+        logger.info("Record:{}", d);
+
+        Double[] dd = new Double[labelIndex];
+
+        for (int i = 0; i < d.length - 1; i++) {
+            dd[i] = Double.parseDouble(d[i]);
+        }
+
+        return dd;
+    }
+
+    /**
+     * Used for reading file from classpath
+     * @param csvFileClasspath
+     * @param batchSize
+     * @param labelIndex
+     * @param numClasses
+     * @return
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    private static org.nd4j.linalg.dataset.DataSet getRecordsfromClasspath(
+            String csvFileClasspath, int batchSize, int labelIndex, int numClasses)
+            throws IOException, InterruptedException{
+
+        RecordReader rr = new CSVRecordReader();
+        rr.initialize(new FileSplit(new ClassPathResource(csvFileClasspath).getFile()));
         DataSetIterator iterator = new RecordReaderDataSetIterator(rr,batchSize,labelIndex,numClasses);
         return iterator.next();
     }
+
 }

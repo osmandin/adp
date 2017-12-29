@@ -1,31 +1,26 @@
 package edu.umass.adp;
 
-import au.com.bytecode.opencsv.CSVReader;
 import au.com.bytecode.opencsv.CSVWriter;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.filefilter.IOFileFilter;
 import org.apache.commons.io.filefilter.TrueFileFilter;
-import org.apache.commons.lang3.ClassPathUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileWriter;
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.stream.Collectors;
-import java.util.stream.DoubleStream;
-import java.util.stream.IntStream;
-import org.springframework.util.ClassUtils;
 
 public class Main {
 
     final static Logger logger = LoggerFactory.getLogger(Main.class);
 
-    final static String rootPath = "/Users/osmandin/Downloads/adp-source/source/"; //TODO
+    final static String rootPath = "/Users/osmandin/Downloads/adp-source/source/"; //TODO externalize
+
+    final static String projectFile = //TODO externalize
+            "/Users/osmandin/IdeaProjects/adp/src/main/resources/links-shorter.csv"; // path to csv file
+
 
     public static void main(String args[]) throws Exception {
 
@@ -34,9 +29,12 @@ public class Main {
 
         // read the source directory with project files
 
-        final Map <PROMISE, Map> data = new ProjectReader().processProjects("/Users/osmandin/IdeaProjects/adp/src/main/resources/links.csv"); //TODO
-
+        final Map <PROMISE, Map> data = new ProjectReader().processProjects(projectFile);
         final Set<PROMISE> projects = data.keySet();
+
+        int numRecords = 0; // total number of records in the dataset
+
+        int unk = 0; //files whose status is not mentioned in the PROMISE dataset
 
         // Phase 1: Extract AST features from disk
         for (final PROMISE p: projects) {
@@ -65,14 +63,9 @@ public class Main {
 
             final ASTFeatures ast = new ASTFeatures(tokenMapping);
 
+
             for (final File file : files) {
-                logger.info("Processing file:{}", file.getCanonicalPath());
-
-                //final String filePath = extractPath(file.getCanonicalPath(), p.getSourcePath());
-
-                //String extractedName = fileBugStatus.get(ClassUtils.convertResourcePathToClassName(filePath));
-
-                //logger.info("Extracted class name:{}", extractedName);
+                // logger.info("Processing file:{}", file.getCanonicalPath());
 
                 final FileInputStream in = new FileInputStream(file);
 
@@ -87,22 +80,38 @@ public class Main {
                 final double[] featuresForFile = ast.walk(cu);
                 logger.info("Extracted raw features from:{}", file.getCanonicalPath());
 
-                // extract package name to construct the full class name
-                final CompilationUnit cu2;
-                try {
-                    cu2 = JavaParser.parse(in);
-                } catch (Exception e) {
-                    logger.error("Parsing exception", e); //TODO log these to file
-                    continue;
-                }
 
                 final List<String> className = ast.className(cu);
 
-                for (String s : className) {
-                    logger.info("Extracted class name:{} from file:{}", className, file.getName());
+                int label = 0;
+
+                for (final String s : className) {
+                    //logger.info("Extracted class name:{} from file:{}", s, file.getName());
+
+                    // look up label
+
+                    //logger.debug("Match:{}", fileBugStatus.get(s));
+
+                    String status = fileBugStatus.get(s);
+
+                    if (status == null) {
+                        label = -1; // exclude for now
+                        unk = unk + 1;
+                    } else if (Integer.parseInt(status) == 0) {
+                        label = 0;
+                    } else {
+                       // label = 1; // binary classification
+                        label = Integer.parseInt(status);
+                    } // TODO does this overwrite?
                 }
 
-                astFeaturesForProject.add(featuresForFile);
+                double[] featureswithlabel = new double[featuresForFile.length + 1];
+                System.arraycopy( featuresForFile, 0, featureswithlabel, 0, featuresForFile.length);
+                featureswithlabel[featureswithlabel.length - 1 ] = label; // labels are appended to the end
+
+                if (label != -1) {
+                    astFeaturesForProject.add(featureswithlabel);
+                }
             }
 
             p.setRawFeatures(astFeaturesForProject); // assigns features to each project
@@ -115,6 +124,8 @@ public class Main {
         for (final PROMISE p : projects) {
             List<double[]> features = p.getRawFeatures();
 
+            numRecords += features.size();
+
             for (double[] d : features) {
                 if (d.length > max) {
                     max = d.length;
@@ -126,19 +137,41 @@ public class Main {
 
         // pad with 0s // TODO replace with streaming (inefficent)
 
+        int notBuggy = 0, buggy = 0;
+
         for (final PROMISE p : projects) {
             List<double[]> features = p.getRawFeatures();
             List<double[]> paddedFetures = new ArrayList<>();
 
-            for (double[] d : features) {
-                if (d.length <= max) {
-                    double[] newone = new double[max];
-                    System.arraycopy( d, 0, newone, 0, d.length);
-                    paddedFetures.add(newone);
+            for (double[] f : features) {
+                if (f.length <= max) {
+                    double[] padded = new double[max];
+                    System.arraycopy( f, 0, padded, 0, f.length-1); // don't copy the label
+                    padded[max - 1] = f[f.length-1]; // copy the label to the end of the array
+
+                    if (f[f.length - 1] != padded[max - 1]) {
+                        logger.error("Failed confirmation check");
+                        return;
+                    }
+
+                    // test skip if label is 0
+
+                    if (padded[max - 1] == 0) {
+                        notBuggy = notBuggy + 1;
+                        paddedFetures.add(padded);
+                    } else {
+                        buggy = buggy + 1;
+                        paddedFetures.add(padded);
+                    }
                 }
             }
             p.setPaddedFeatures(paddedFetures);
         }
+
+        logger.debug("Not buggy:{}", notBuggy);
+        logger.debug("buggy:{}", buggy);
+        logger.debug("Num records:{}", numRecords);
+        logger.debug("File not mentioned in PROMISE:{}", unk);
 
         // confirm that padding worked
 
@@ -165,9 +198,22 @@ public class Main {
 
             for (final double[] feature : p.getPaddedFeatures()) {
                 // transform features to strings so that they can be written by OpenCSV
-                DoubleStream intStream = Arrays.stream(feature);
-                String[] featureStr = intStream.sorted().mapToObj(String::valueOf).toArray(String[]::new);
-                csvWriter.writeNext(featureStr);
+                // DoubleStream doubleStream = Arrays.stream(feature);
+
+                String[] featuresStr = new String[feature.length];
+
+                for (int i = 0; i < feature.length; i++) {
+
+                    if (i == feature.length - 1) { // for the label, we want to write 1.0 as 1
+                        featuresStr[i] = String.valueOf(feature[i]).replace(".0", "");
+                    }
+                    else {
+                        featuresStr[i] = String.valueOf(feature[i]);
+                    }
+                }
+
+                //String[] featureStr = doubleStream.sorted().mapToObj(String::valueOf).toArray(String[]::new);
+                csvWriter.writeNext(featuresStr);
             }
 
             logger.debug("Writing features to folder:{} for:{} for verison:{}", folder.getAbsolutePath(), p.getProjectName(), p.getVersion());
@@ -177,21 +223,19 @@ public class Main {
             // generate semantic features:
 
             SemanticFeatures semanticFeatures = new SemanticFeatures();
-            semanticFeatures.generate(folder.getAbsolutePath() + "/astfile.csv"); //currently not on the path
+            String generated = semanticFeatures.generate(folder.getAbsolutePath() + "/astfile.csv", max - 1, numRecords); //currently not on the path
+
+
+            final StringWriter s = new StringWriter();
+            CSVWriter writer = new CSVWriter(s, '\t');
+            // feed in your array (or convert your data to an array)
+            writer.writeNext(generated.split(","));
+            writer.close();
+            String finalString = s.toString();
+            final File file = new File(p.getProjectName() + "-" + p.getVersion() + "-" + "semantic_features.txt");
+            FileUtils.writeStringToFile(file, finalString);
         }
 
-
-    }
-
-    private static String extractPath (String rootPath, String projectName) {
-
-        String[] output = rootPath.split("/");
-
-        for (String o : output) {
-            logger.info("Path:", o);
-
-        }
-        return null;
 
     }
 
